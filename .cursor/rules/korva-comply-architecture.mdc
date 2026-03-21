@@ -1,0 +1,31 @@
+---
+description: Korva Comply stack, naming, and architectural constraints
+alwaysApply: true
+---
+
+# Korva Comply — Project Rules
+
+## Stack
+
+- Next.js 14 (App Router)
+- TypeScript (strict)
+- Supabase (PostgreSQL + Auth + Row Level Security)
+- Zendesk Apps Framework (ZAF) for Zendesk integration
+- Anthropic Claude API (claude-sonnet-4-20250514) for classification
+- Tailwind CSS for styling
+- Vercel for deployment
+
+## Naming
+
+- Product name: Korva Comply
+- Database tables use snake_case
+- API routes under /api/
+- Zendesk custom fields prefixed with korva_comply_
+
+## Key Constraints
+
+- NEVER store full ticket content in our database (GDPR)
+- Store only classification results, metadata, and audit trail
+- All Zendesk API auth via OAuth 2.0, never API tokens
+- EU hosting only (Supabase EU region, Vercel EU)
+- Every classification decision must be logged with timestamp and actor
