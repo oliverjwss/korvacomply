@@ -48,6 +48,13 @@ function mapRow(row: Record<string, unknown>) {
     vulnerability_detected: row.vulnerability_detected,
     vulnerability_drivers: row.vulnerability_drivers,
     vulnerability_indicators: row.vulnerability_indicators,
+    vulnerability_assessment_confidence:
+      row.vulnerability_assessment_confidence ?? null,
+    vulnerability_recommended_action:
+      row.vulnerability_recommended_action ?? null,
+    vulnerability_agent_decision:
+      (row.vulnerability_agent_decision as string | null) ?? null,
+    vulnerability_dismissal_reason: row.vulnerability_dismissal_reason ?? null,
     consumer_duty_risk: row.consumer_duty_risk,
     consumer_duty_notes: row.consumer_duty_notes,
     created_at: row.created_at,
@@ -158,7 +165,7 @@ export async function POST(request: NextRequest) {
   const { data: existing } = await supabase
     .from("complaints")
     .select(
-      "audit_log, complaint_outcome, redress_amount, resolved_at, three_day_resolved, referred_to_fos, psr_exceptional_circumstances, requester_name, sla_met"
+      "audit_log, complaint_outcome, redress_amount, resolved_at, three_day_resolved, referred_to_fos, psr_exceptional_circumstances, requester_name, sla_met, vulnerability_agent_decision, vulnerability_dismissal_reason"
     )
     .eq("org_id", b.org_id)
     .eq("zendesk_ticket_id", b.zendesk_ticket_id)
@@ -216,7 +223,27 @@ export async function POST(request: NextRequest) {
       psr_exceptional_circumstances: psrExceptional,
     },
   };
-  const audit_log = [...prevLog, entry];
+  const auditEntries: AuditEntry[] = [entry];
+  if (b.is_complaint && b.vulnerability_agent_decision) {
+    auditEntries.push({
+      timestamp: new Date().toISOString(),
+      actor: b.classified_by,
+      action: "vulnerability_decision",
+      details: {
+        decision: b.vulnerability_agent_decision,
+        vulnerability_detected: b.vulnerability_detected,
+        drivers: b.vulnerability_drivers,
+        indicators: b.vulnerability_indicators,
+        dismissal_reason:
+          b.vulnerability_dismissal_reason?.trim() &&
+          b.vulnerability_agent_decision === "not_vulnerable"
+            ? b.vulnerability_dismissal_reason.trim()
+            : null,
+        ai_assessment_confidence: b.vulnerability_assessment_confidence ?? null,
+      },
+    });
+  }
+  const audit_log = [...prevLog, ...auditEntries];
 
   const requesterName =
     b.requester_name?.trim() ||
@@ -254,6 +281,17 @@ export async function POST(request: NextRequest) {
     vulnerability_detected: b.vulnerability_detected,
     vulnerability_drivers: b.vulnerability_drivers,
     vulnerability_indicators: b.vulnerability_indicators,
+    vulnerability_assessment_confidence:
+      b.vulnerability_assessment_confidence ?? null,
+    vulnerability_recommended_action:
+      b.vulnerability_recommended_action?.trim() || null,
+    vulnerability_agent_decision: b.is_complaint
+      ? b.vulnerability_agent_decision ?? null
+      : null,
+    vulnerability_dismissal_reason:
+      b.is_complaint && b.vulnerability_agent_decision === "not_vulnerable"
+        ? (b.vulnerability_dismissal_reason ?? "").trim() || null
+        : null,
     consumer_duty_risk: b.consumer_duty_risk,
     consumer_duty_notes: b.consumer_duty_notes,
     audit_log,

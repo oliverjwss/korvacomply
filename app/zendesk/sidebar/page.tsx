@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ClassificationResult,
   ComplaintRecord,
+  VulnerabilityAgentDecision,
   VulnerabilityDriver,
 } from "@/types/comply";
 import type { ZafClient } from "@/types/zendesk-zaf";
@@ -12,6 +13,18 @@ import {
   zendeskValuesToDrivers,
 } from "@/app/zendesk/sidebar/vulnerability-map";
 import { isPsrStyleComplaint } from "@/lib/sla-shared";
+import { getGuidanceBulletsForDrivers } from "@/lib/vulnerability-guidance";
+
+const DRIVER_DISPLAY: Record<VulnerabilityDriver, string> = {
+  Health: "Health",
+  "Life events": "Life events",
+  Resilience: "Financial resilience",
+  Capability: "Capability",
+};
+
+function normDrivers(ds: VulnerabilityDriver[]) {
+  return JSON.stringify([...ds].sort());
+}
 
 type SlaLivePayload = {
   sla_type: string;
@@ -150,6 +163,10 @@ export default function ZendeskSidebarPage() {
     null
   );
   const [slaLive, setSlaLive] = useState<SlaLivePayload | null>(null);
+  const [vulnAgentDecision, setVulnAgentDecision] =
+    useState<VulnerabilityAgentDecision | null>(null);
+  const [vulnDismissReason, setVulnDismissReason] = useState("");
+  const [manualVulnPanel, setManualVulnPanel] = useState(false);
 
   const subOptions = useMemo(() => {
     if (!config || !category) return [];
@@ -391,13 +408,24 @@ export default function ZendeskSidebarPage() {
       setCategory(result.category);
       setSubcategory(result.subcategory);
       setProductArea(result.product_area);
-      setVulnFlag(result.vulnerability_detected);
-      setVulnDrivers(result.vulnerability_drivers ?? []);
-      setVulnIndicators(result.vulnerability_indicators ?? []);
+      const va = result.vulnerability_assessment;
+      setVulnIndicators(
+        (va.indicators ?? []).filter(Boolean)
+      );
+      setVulnAgentDecision(null);
+      setVulnDismissReason("");
+      setManualVulnPanel(Boolean(va.detected));
+      if (va.confidence === "high" && va.detected) {
+        setVulnFlag(true);
+        setVulnDrivers([...(va.drivers ?? [])]);
+      } else {
+        setVulnFlag(false);
+        setVulnDrivers([]);
+      }
       setDutyNotes(result.consumer_duty_notes);
       setDutyRisk(result.consumer_duty_risk);
       setPhase("ready");
-      safeResize(client, { height: "720px" });
+      safeResize(client, { height: "780px" });
     } catch (e) {
       const msg =
         e instanceof Error ? e.message : "Something went wrong loading Korva.";
@@ -458,14 +486,30 @@ export default function ZendeskSidebarPage() {
     };
   }, [initZaf]);
 
+  function vulnerabilityMatchesAi(): boolean {
+    if (!ai) return false;
+    const va = ai.vulnerability_assessment;
+    if (va.confidence === "high" && va.detected) {
+      return (
+        vulnAgentDecision === "vulnerable" &&
+        normDrivers(vulnDrivers) === normDrivers(va.drivers ?? [])
+      );
+    }
+    if (!va.detected) {
+      return vulnAgentDecision === "not_vulnerable";
+    }
+    if (va.confidence === "low" && va.detected) {
+      return vulnAgentDecision === "not_vulnerable";
+    }
+    return false;
+  }
+
   const aiMatchesForm =
     ai &&
     category === ai.category &&
     subcategory === ai.subcategory &&
     productArea === ai.product_area &&
-    vulnFlag === ai.vulnerability_detected &&
-    JSON.stringify(vulnDrivers.sort()) ===
-      JSON.stringify((ai.vulnerability_drivers ?? []).sort());
+    vulnerabilityMatchesAi();
 
   const persist = async (params: {
     is_complaint: boolean;
@@ -577,9 +621,26 @@ export default function ZendeskSidebarPage() {
           final_product_area: params.is_complaint ? productArea : "",
           classification_method: params.method,
           classified_by: agentId,
-          vulnerability_detected: vulnFlag,
-          vulnerability_drivers: vulnDrivers,
+          vulnerability_detected: params.is_complaint
+            ? vulnAgentDecision === "vulnerable"
+            : false,
+          vulnerability_drivers: params.is_complaint ? vulnDrivers : [],
           vulnerability_indicators: vulnIndicators,
+          vulnerability_agent_decision: params.is_complaint
+            ? vulnAgentDecision!
+            : undefined,
+          vulnerability_dismissal_reason:
+            params.is_complaint && vulnAgentDecision === "not_vulnerable"
+              ? vulnDismissReason.trim()
+              : undefined,
+          vulnerability_assessment_confidence:
+            params.is_complaint && ai
+              ? ai.vulnerability_assessment.confidence
+              : null,
+          vulnerability_recommended_action:
+            params.is_complaint && ai
+              ? ai.vulnerability_assessment.recommended_action
+              : null,
           consumer_duty_risk: dutyRisk,
           consumer_duty_notes: dutyNotes,
           received_at: receivedAt,
@@ -610,6 +671,21 @@ export default function ZendeskSidebarPage() {
 
   const onAccept = () => {
     if (!ai) return;
+    if (!vulnAgentDecision) {
+      setErr(
+        "PS25/19: choose whether the complainant is vulnerable — use Confirm vulnerable or Not vulnerable."
+      );
+      return;
+    }
+    if (vulnAgentDecision === "vulnerable" && vulnDrivers.length === 0) {
+      setErr("Select at least one vulnerability driver.");
+      return;
+    }
+    if (vulnAgentDecision === "not_vulnerable" && !vulnDismissReason.trim()) {
+      setErr("Add a short reason when recording not vulnerable (audit trail).");
+      return;
+    }
+    setErr(null);
     const method = aiMatchesForm ? "ai_accepted" : "ai_edited";
     void persist({ is_complaint: true, method });
   };
@@ -671,14 +747,70 @@ export default function ZendeskSidebarPage() {
                   <dt className="text-slate-500">Product area</dt>
                   <dd>{catName(productArea, config.taxonomy.product_areas)}</dd>
                 </div>
-                {vulnFlag && (
-                  <div>
-                    <dt className="text-slate-500">Vulnerability</dt>
-                    <dd>
-                      Flagged ({vulnDrivers.join(", ") || "see ticket fields"})
-                    </dd>
-                  </div>
-                )}
+                <div>
+                  <dt className="text-slate-500">Vulnerability (PS25/19)</dt>
+                  <dd className="space-y-1">
+                    {storedComplaint?.vulnerability_agent_decision ? (
+                      <>
+                        <p>
+                          {storedComplaint.vulnerability_agent_decision ===
+                          "vulnerable"
+                            ? "Recorded as vulnerable"
+                            : "Recorded as not vulnerable"}
+                          {storedComplaint.vulnerability_assessment_confidence && (
+                            <span className="text-slate-500">
+                              {" "}
+                              (AI:{" "}
+                              {storedComplaint.vulnerability_assessment_confidence})
+                            </span>
+                          )}
+                        </p>
+                        {storedComplaint.vulnerability_agent_decision ===
+                          "vulnerable" &&
+                          storedComplaint.vulnerability_drivers?.length > 0 && (
+                            <p className="text-slate-600">
+                              {storedComplaint.vulnerability_drivers
+                                .map((d) => DRIVER_DISPLAY[d] ?? d)
+                                .join(", ")}
+                            </p>
+                          )}
+                        {storedComplaint.vulnerability_agent_decision ===
+                          "not_vulnerable" &&
+                          storedComplaint.vulnerability_dismissal_reason && (
+                            <p className="text-slate-600 text-[11px]">
+                              Reason:{" "}
+                              {storedComplaint.vulnerability_dismissal_reason}
+                            </p>
+                          )}
+                        {storedComplaint.vulnerability_agent_decision ===
+                          "vulnerable" &&
+                          getGuidanceBulletsForDrivers(
+                            storedComplaint.vulnerability_drivers ?? []
+                          ).length > 0 && (
+                          <ul className="text-[11px] list-disc pl-4 text-slate-600">
+                            {getGuidanceBulletsForDrivers(
+                              storedComplaint.vulnerability_drivers ?? []
+                            ).map((b, i) => (
+                              <li key={i}>{b}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </>
+                    ) : vulnFlag ? (
+                      <span>
+                        Flagged in Zendesk (
+                        {vulnDrivers.map((d) => DRIVER_DISPLAY[d]).join(", ") ||
+                          "see fields"}
+                        )
+                      </span>
+                    ) : (
+                      <span className="text-slate-600">
+                        Not flagged — open Korva on a new session to sync PS25/19
+                        fields if missing.
+                      </span>
+                    )}
+                  </dd>
+                </div>
               </dl>
               {classifiedAsComplaint && slaLive && (
                 <section className="space-y-1 border-t border-slate-200 pt-2 mt-2">
@@ -790,24 +922,6 @@ export default function ZendeskSidebarPage() {
                     </option>
                   ))}
                 </select>
-                <div className="flex gap-2 pt-1">
-                  <button
-                    type="button"
-                    className="flex-1 bg-[#03363d] text-white text-xs font-semibold rounded py-2 disabled:opacity-50"
-                    disabled={saving}
-                    onClick={() => onAccept()}
-                  >
-                    Accept
-                  </button>
-                  <button
-                    type="button"
-                    className="flex-1 border border-slate-300 text-slate-800 text-xs font-semibold rounded py-2 disabled:opacity-50"
-                    disabled={saving}
-                    onClick={() => onReject()}
-                  >
-                    Reject
-                  </button>
-                </div>
               </section>
 
               <section className="space-y-2 border-t border-slate-200 pt-2">
@@ -862,45 +976,212 @@ export default function ZendeskSidebarPage() {
               </section>
 
               <section className="space-y-2 border-t border-slate-200 pt-2">
-                <h2 className="font-semibold text-slate-900">Vulnerability</h2>
-                {ai.vulnerability_detected && vulnIndicators.length > 0 && (
-                  <div className="text-xs bg-amber-50 border border-amber-200 rounded p-2 text-amber-950">
-                    {vulnIndicators.join("; ")}
-                  </div>
-                )}
-                <label className="flex items-center gap-2 text-xs">
-                  <input
-                    type="checkbox"
-                    checked={vulnFlag}
-                    onChange={(e) => setVulnFlag(e.target.checked)}
-                  />
-                  Flag as vulnerable customer
-                </label>
-                <div className="flex flex-wrap gap-2 text-xs">
-                  {(
-                    [
-                      "Health",
-                      "Life events",
-                      "Resilience",
-                      "Capability",
-                    ] as VulnerabilityDriver[]
-                  ).map((d) => (
-                    <label key={d} className="flex items-center gap-1">
-                      <input
-                        type="checkbox"
-                        checked={vulnDrivers.includes(d)}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setVulnDrivers([...vulnDrivers, d]);
-                          } else {
-                            setVulnDrivers(vulnDrivers.filter((x) => x !== d));
-                          }
+                <h2 className="font-semibold text-slate-900">
+                  Vulnerability (FG21/1)
+                </h2>
+                <p className="text-[11px] text-slate-500 leading-snug">
+                  PS25/19: you must record whether the complainant is vulnerable
+                  before saving this complaint.
+                </p>
+
+                {ai &&
+                  !ai.vulnerability_assessment.detected &&
+                  !manualVulnPanel && (
+                    <div className="space-y-2 rounded border border-slate-200 bg-slate-50 p-2">
+                      <p className="text-xs text-slate-600">
+                        No vulnerability indicators detected.
+                      </p>
+                      <button
+                        type="button"
+                        className="w-full border border-slate-300 text-slate-800 text-xs font-semibold rounded py-1.5"
+                        onClick={() => {
+                          setManualVulnPanel(true);
+                          setVulnAgentDecision(null);
+                          setVulnDismissReason("");
+                          setVulnFlag(false);
+                          setVulnDrivers([]);
                         }}
-                      />
-                      {d}
-                    </label>
-                  ))}
-                </div>
+                      >
+                        Flag as vulnerable
+                      </button>
+                    </div>
+                  )}
+
+                {ai &&
+                  (manualVulnPanel ||
+                    ai.vulnerability_assessment.detected) && (
+                    <div className="space-y-2">
+                      {ai.vulnerability_assessment.confidence === "high" &&
+                        ai.vulnerability_assessment.detected && (
+                          <div className="text-xs bg-amber-50 border border-amber-300 rounded p-2 text-amber-950">
+                            <span className="font-semibold">
+                              Vulnerability indicator detected
+                            </span>
+                            {vulnIndicators.length > 0 && (
+                              <ul className="mt-1 list-disc pl-4 font-normal text-amber-900">
+                                {vulnIndicators.slice(0, 6).map((x, i) => (
+                                  <li key={i}>&ldquo;{x}&rdquo;</li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        )}
+                      {ai.vulnerability_assessment.detected &&
+                        (ai.vulnerability_assessment.confidence === "medium" ||
+                          ai.vulnerability_assessment.confidence === "low") && (
+                          <div className="text-xs bg-slate-50 border border-slate-200 rounded p-2 text-slate-800">
+                            <span className="font-semibold">
+                              Possible vulnerability — consider exploring
+                            </span>
+                            <p className="mt-1 text-slate-600">
+                              Ask whether the customer needs additional support or
+                              reasonable adjustments before you decide.
+                            </p>
+                            {vulnIndicators.length > 0 && (
+                              <ul className="mt-1 list-disc pl-4">
+                                {vulnIndicators.slice(0, 6).map((x, i) => (
+                                  <li key={i}>&ldquo;{x}&rdquo;</li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        )}
+                      {manualVulnPanel &&
+                        !ai.vulnerability_assessment.detected && (
+                          <p className="text-xs font-medium text-slate-700">
+                            Manual vulnerability flag — select drivers and
+                            confirm.
+                          </p>
+                        )}
+                      {ai.vulnerability_assessment.recommended_action && (
+                        <p className="text-xs text-slate-600 italic border-l-2 border-slate-300 pl-2">
+                          {ai.vulnerability_assessment.recommended_action}
+                        </p>
+                      )}
+
+                      {!vulnAgentDecision && (
+                        <div className="flex flex-col gap-2">
+                          <button
+                            type="button"
+                            className="w-full bg-amber-600 text-white text-xs font-semibold rounded py-2"
+                            onClick={() => {
+                              setVulnAgentDecision("vulnerable");
+                              setVulnFlag(true);
+                              if (
+                                vulnDrivers.length === 0 &&
+                                ai.vulnerability_assessment.drivers?.length
+                              ) {
+                                setVulnDrivers([
+                                  ...ai.vulnerability_assessment.drivers,
+                                ]);
+                              }
+                            }}
+                          >
+                            Confirm vulnerable
+                          </button>
+                          <button
+                            type="button"
+                            className="w-full border border-slate-300 text-slate-800 text-xs font-semibold rounded py-2"
+                            onClick={() => {
+                              setVulnAgentDecision("not_vulnerable");
+                              setVulnFlag(false);
+                              setVulnDrivers([]);
+                            }}
+                          >
+                            Not vulnerable
+                          </button>
+                        </div>
+                      )}
+
+                      {vulnAgentDecision === "vulnerable" && (
+                        <>
+                          <p className="text-xs text-slate-600">
+                            Drivers (edit if needed):
+                          </p>
+                          <div className="flex flex-wrap gap-2 text-xs">
+                            {(
+                              [
+                                "Health",
+                                "Life events",
+                                "Resilience",
+                                "Capability",
+                              ] as VulnerabilityDriver[]
+                            ).map((d) => (
+                              <label
+                                key={d}
+                                className="flex items-center gap-1 cursor-pointer"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={vulnDrivers.includes(d)}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setVulnDrivers([...vulnDrivers, d]);
+                                    } else {
+                                      setVulnDrivers(
+                                        vulnDrivers.filter((x) => x !== d)
+                                      );
+                                    }
+                                  }}
+                                />
+                                {DRIVER_DISPLAY[d]}
+                              </label>
+                            ))}
+                          </div>
+                          {getGuidanceBulletsForDrivers(vulnDrivers).length >
+                            0 && (
+                            <div className="text-xs bg-emerald-50 border border-emerald-200 rounded p-2 text-emerald-950">
+                              <span className="font-semibold">Guidance</span>
+                              <ul className="mt-1 list-disc pl-4 space-y-0.5">
+                                {getGuidanceBulletsForDrivers(vulnDrivers).map(
+                                  (b, i) => (
+                                    <li key={i}>{b}</li>
+                                  )
+                                )}
+                              </ul>
+                            </div>
+                          )}
+                        </>
+                      )}
+
+                      {vulnAgentDecision === "not_vulnerable" && (
+                        <label className="block text-xs space-y-1">
+                          <span className="text-slate-600">
+                            Reason (audit trail, required)
+                          </span>
+                          <textarea
+                            className="w-full border border-slate-300 rounded px-2 py-1 text-xs min-h-[56px]"
+                            value={vulnDismissReason}
+                            onChange={(e) =>
+                              setVulnDismissReason(e.target.value)
+                            }
+                            placeholder="e.g. No indicators after review"
+                          />
+                        </label>
+                      )}
+
+                      {vulnAgentDecision && (
+                        <button
+                          type="button"
+                          className="text-xs text-slate-600 underline"
+                          onClick={() => {
+                            setVulnAgentDecision(null);
+                            setVulnDismissReason("");
+                            const va = ai.vulnerability_assessment;
+                            if (va.confidence === "high" && va.detected) {
+                              setVulnFlag(true);
+                              setVulnDrivers([...(va.drivers ?? [])]);
+                            } else {
+                              setVulnFlag(false);
+                              setVulnDrivers([]);
+                            }
+                          }}
+                        >
+                          Change vulnerability decision
+                        </button>
+                      )}
+                    </div>
+                  )}
               </section>
 
               <section className="space-y-1 border-t border-slate-200 pt-2">
@@ -922,6 +1203,32 @@ export default function ZendeskSidebarPage() {
                   {ai.reasoning}
                 </section>
               )}
+
+              <div className="flex gap-2 pt-1 border-t border-slate-200">
+                <button
+                  type="button"
+                  className="flex-1 bg-[#03363d] text-white text-xs font-semibold rounded py-2 disabled:opacity-50"
+                  disabled={
+                    saving ||
+                    !vulnAgentDecision ||
+                    (vulnAgentDecision === "vulnerable" &&
+                      vulnDrivers.length === 0) ||
+                    (vulnAgentDecision === "not_vulnerable" &&
+                      !vulnDismissReason.trim())
+                  }
+                  onClick={() => onAccept()}
+                >
+                  Accept
+                </button>
+                <button
+                  type="button"
+                  className="flex-1 border border-slate-300 text-slate-800 text-xs font-semibold rounded py-2 disabled:opacity-50"
+                  disabled={saving}
+                  onClick={() => onReject()}
+                >
+                  Reject
+                </button>
+              </div>
             </>
           )}
 

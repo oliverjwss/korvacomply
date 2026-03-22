@@ -33,7 +33,17 @@ A complaint is: "any oral or written expression of dissatisfaction, whether just
 1. Decide WHETHER the ticket is a formal complaint under DISP 1.1.1R (threshold is LOW — if in doubt, classify as complaint; under-reporting is a regulatory risk).
 2. Choose COMPLAINT CATEGORY and SUBCATEGORY using ONLY the "value" strings from the taxonomy JSON below (must match exactly).
 3. Choose PRODUCT/SERVICE AREA using ONLY "value" strings from product_area_options in the taxonomy JSON. This firm holds regulated activity ids: ${activities}. Map to the most relevant product area.
-4. VULNERABILITY (FG21/1-style): Health; Life events; Resilience; Capability — flag if indicators suggest vulnerability; list short indicator phrases in vulnerability_indicators.
+4. VULNERABILITY (FCA FG21/1 — four drivers). Return a structured "vulnerability_assessment" object (see schema below). Use UK English.
+   **Health** — keywords/signals include: illness, disability, mental health, anxiety, depression, medication, hospital, treatment, addiction, chronic condition, pain, diagnosis, cancer, terminal. Context: cannot understand due to health; carer/advocate involvement.
+   **Life events** — bereavement, death, divorce, separation, redundancy, job loss, unemployment, new baby, caring for someone, domestic abuse, victim, refugee, asylum, prison, homelessness. Context: sudden change in circumstances; crisis.
+   **Resilience (financial)** — struggling to pay, can't afford, debt, arrears, benefits, universal credit, food bank, overdrawn, missed payment, hardship, behind on bills, CCJ, county court judgment, bankruptcy, IVA. Context: payment plans; financial difficulty; erratic payments.
+   **Capability** — don't understand, confused, can't read, English not first language, no computer, no internet, can't use app, learning difficulty, dyslexia, elderly, power of attorney, acting on behalf of. Context: very short messages; phone preferred; third party writing.
+   **Confidence rules:**
+   - **high**: explicit disclosure (e.g. "I have depression", "I lost my job", named diagnosis, clear financial crisis).
+   - **medium**: strong but not explicit ("really struggling", "can't cope with this", clear stress without naming cause).
+   - **low**: weak or ambiguous ("stressful", "confused", generic frustration).
+   Set "detected" true if any credible signal exists (even low confidence). For high confidence you may pre-fill drivers you can justify from the ticket; for medium/low still list likely drivers but keep confidence honest.
+   "recommended_action": one short sentence telling the agent what to do next (e.g. explore support needs, offer adjustments).
 5. CONSUMER DUTY (PRIN 2A): Assess risk of poor outcomes / foreseeable harm / unclear or misleading communication for this case.
 
 ## Rules
@@ -47,13 +57,17 @@ ${taxonomy}
 ## Required JSON schema (types)
 {
   "is_complaint": boolean,
-  "complaint_confidence": number,  // 0.0–1.0
+  "complaint_confidence": number,
   "category": string,
   "subcategory": string,
   "product_area": string,
-  "vulnerability_detected": boolean,
-  "vulnerability_indicators": string[] | null,
-  "vulnerability_drivers": ("Health" | "Life events" | "Resilience" | "Capability")[] | null,
+  "vulnerability_assessment": {
+    "detected": boolean,
+    "confidence": "high" | "medium" | "low",
+    "drivers": ("Health" | "Life events" | "Resilience" | "Capability")[],
+    "indicators": string[] | null,
+    "recommended_action": string
+  },
   "consumer_duty_risk": "low" | "medium" | "high",
   "consumer_duty_notes": string,
   "reasoning": string

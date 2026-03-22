@@ -16,6 +16,18 @@ export type VulnerabilityDriver =
   | "Resilience"
   | "Capability";
 
+export type VulnerabilityConfidence = "high" | "medium" | "low";
+
+export type VulnerabilityAgentDecision = "vulnerable" | "not_vulnerable";
+
+export interface VulnerabilityAssessment {
+  detected: boolean;
+  confidence: VulnerabilityConfidence;
+  drivers: VulnerabilityDriver[];
+  indicators: string[];
+  recommended_action: string;
+}
+
 export type RiskLevel = "low" | "medium" | "high";
 
 export interface Organisation {
@@ -68,6 +80,13 @@ export interface ComplaintRecord {
   vulnerability_detected: boolean;
   vulnerability_drivers: VulnerabilityDriver[];
   vulnerability_indicators: string[];
+  vulnerability_assessment_confidence: VulnerabilityConfidence | null;
+  vulnerability_recommended_action: string | null;
+  vulnerability_agent_decision:
+    | VulnerabilityAgentDecision
+    | "pending"
+    | null;
+  vulnerability_dismissal_reason: string | null;
   consumer_duty_risk: RiskLevel;
   consumer_duty_notes: string;
   created_at: string;
@@ -81,9 +100,7 @@ export interface ClassificationResult {
   category: string;
   subcategory: string;
   product_area: string;
-  vulnerability_detected: boolean;
-  vulnerability_indicators: string[] | null;
-  vulnerability_drivers: VulnerabilityDriver[] | null;
+  vulnerability_assessment: VulnerabilityAssessment;
   consumer_duty_risk: RiskLevel;
   consumer_duty_notes: string;
   reasoning: string;
@@ -116,6 +133,10 @@ export interface SaveComplaintRequest {
   vulnerability_detected: boolean;
   vulnerability_drivers: string[];
   vulnerability_indicators: string[];
+  vulnerability_agent_decision?: VulnerabilityAgentDecision;
+  vulnerability_dismissal_reason?: string;
+  vulnerability_assessment_confidence?: VulnerabilityConfidence | null;
+  vulnerability_recommended_action?: string | null;
   consumer_duty_risk: string;
   consumer_duty_notes: string;
   received_at: string;
