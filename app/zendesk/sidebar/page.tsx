@@ -1,17 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ClassificationResult, VulnerabilityDriver } from "@/types/comply";
+import type {
+  ClassificationResult,
+  ComplaintRecord,
+  VulnerabilityDriver,
+} from "@/types/comply";
 import type { ZafClient } from "@/types/zendesk-zaf";
 import {
   driversToZendeskValues,
   zendeskValuesToDrivers,
 } from "@/app/zendesk/sidebar/vulnerability-map";
-import {
-  computeSlaDeadline,
-  formatDateOnly,
-  pickSlaType,
-} from "@/lib/classification/sla";
+import { isPsrStyleComplaint } from "@/lib/sla-shared";
+
+type SlaLivePayload = {
+  sla_type: string;
+  sla_deadline: string;
+  status: string;
+  days_remaining: number;
+};
 
 type FieldMapping = Record<string, number>;
 
@@ -101,6 +108,19 @@ function safeResize(client: ZafClient, payload: { height?: string; width?: strin
   void Promise.resolve(client.invoke("resize", payload)).catch(() => {});
 }
 
+function slaTypeDescription(t: string): string {
+  switch (t) {
+    case "standard_8_week":
+      return "DISP 1.6.2R — 8 weeks (56 calendar days), deadline rolled to next UK business day if needed";
+    case "psr_15_day":
+      return "PSR Reg 101 — 15 UK business days (weekends & bank holidays excluded)";
+    case "psr_35_day":
+      return "PSR Reg 101 — 35 UK business days (exceptional circumstances)";
+    default:
+      return t;
+  }
+}
+
 export default function ZendeskSidebarPage() {
   const clientRef = useRef<ZafClient | null>(null);
   const [phase, setPhase] = useState<
@@ -125,30 +145,87 @@ export default function ZendeskSidebarPage() {
   const [saving, setSaving] = useState(false);
   const [agentId, setAgentId] = useState("");
   const [classifiedAsComplaint, setClassifiedAsComplaint] = useState(true);
+  const [psrExceptional, setPsrExceptional] = useState(false);
+  const [storedComplaint, setStoredComplaint] = useState<ComplaintRecord | null>(
+    null
+  );
+  const [slaLive, setSlaLive] = useState<SlaLivePayload | null>(null);
 
   const subOptions = useMemo(() => {
     if (!config || !category) return [];
     return config.taxonomy.subcategories_by_category[category] ?? [];
   }, [config, category]);
 
-  const slaPreview = useMemo(() => {
-    if (!ai?.is_complaint || !config || !receivedAt) return null;
-    const t = pickSlaType({
-      regulatedActivities: config.regulated_activities,
-      category,
-      subcategory,
-    });
-    const d = formatDateOnly(
-      computeSlaDeadline(new Date(receivedAt), t)
-    );
-    const label =
-      t === "standard_8_week"
-        ? "DISP-style 8-week track (calendar days from ticket date)"
-        : t === "psr_15_day"
-          ? "PSR-style 15-day track (calendar days)"
-          : "PSR-style 35-day track (calendar days)";
-    return { label, deadline: d, type: t };
-  }, [ai, config, receivedAt, category, subcategory]);
+  const showPsrExceptional = useMemo(() => {
+    if (!config) return false;
+    const acts = config.regulated_activities ?? [];
+    const psrFirm =
+      acts.includes("payment_services") || acts.includes("e_money");
+    return psrFirm && isPsrStyleComplaint(category, productArea);
+  }, [config, category, productArea]);
+
+  useEffect(() => {
+    if (!config?.org_id || !subdomain || !receivedAt) {
+      setSlaLive(null);
+      return;
+    }
+    const draftComplaint = !readMode && Boolean(ai?.is_complaint);
+    const readComplaint = readMode && classifiedAsComplaint;
+    if (!draftComplaint && !readComplaint) {
+      setSlaLive(null);
+      return;
+    }
+    const cat =
+      readComplaint && storedComplaint
+        ? storedComplaint.final_category
+        : category;
+    const pa =
+      readComplaint && storedComplaint
+        ? storedComplaint.final_product_area
+        : productArea;
+    const psr =
+      readComplaint && storedComplaint
+        ? Boolean(storedComplaint.psr_exceptional_circumstances)
+        : psrExceptional;
+
+    const ac = new AbortController();
+    void (async () => {
+      try {
+        const res = await fetch("/api/sla/compute", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Zendesk-Subdomain": subdomain,
+          },
+          body: JSON.stringify({
+            org_id: config.org_id,
+            received_at: receivedAt,
+            final_category: cat,
+            final_product_area: pa,
+            psr_exceptional_circumstances: psr,
+          }),
+          signal: ac.signal,
+        });
+        const json = (await res.json()) as SlaLivePayload & { error?: unknown };
+        if (!res.ok) return;
+        setSlaLive(json);
+      } catch (e) {
+        if (e instanceof Error && e.name === "AbortError") return;
+      }
+    })();
+    return () => ac.abort();
+  }, [
+    readMode,
+    classifiedAsComplaint,
+    ai?.is_complaint,
+    storedComplaint,
+    category,
+    productArea,
+    psrExceptional,
+    receivedAt,
+    config,
+    subdomain,
+  ]);
 
   const initZaf = useCallback(async () => {
     try {
@@ -261,6 +338,25 @@ export default function ZendeskSidebarPage() {
         setAi(null);
         setPhase("ready");
         safeResize(client, { height: "420px" });
+        void (async () => {
+          try {
+            const cr = await fetch(
+              `/api/complaints?org_id=${encodeURIComponent(orgId)}&ticket_id=${tid}`,
+              { headers: { "X-Zendesk-Subdomain": sd } }
+            );
+            const cj = await cr.json();
+            if (cr.ok && cj.complaint) {
+              setStoredComplaint(cj.complaint as ComplaintRecord);
+              setPsrExceptional(
+                Boolean(
+                  (cj.complaint as ComplaintRecord).psr_exceptional_circumstances
+                )
+              );
+            }
+          } catch {
+            /* optional */
+          }
+        })();
         return;
       }
 
@@ -382,19 +478,46 @@ export default function ZendeskSidebarPage() {
     setErr(null);
     const m = cfg.field_mapping;
     try {
-      const slaDeadline =
-        params.is_complaint
-          ? formatDateOnly(
-              computeSlaDeadline(
-                new Date(receivedAt),
-                pickSlaType({
-                  regulatedActivities: cfg.regulated_activities,
-                  category,
-                  subcategory,
-                })
-              )
-            )
-          : null;
+      let slaDeadline: string | null = null;
+      if (params.is_complaint) {
+        const compRes = await fetch("/api/sla/compute", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Zendesk-Subdomain": subdomain,
+          },
+          body: JSON.stringify({
+            org_id: cfg.org_id,
+            received_at: receivedAt,
+            final_category: category,
+            final_product_area: productArea,
+            psr_exceptional_circumstances: psrExceptional,
+          }),
+        });
+        const compJson = await compRes.json();
+        if (!compRes.ok) {
+          throw new Error(
+            typeof compJson.error === "string"
+              ? compJson.error
+              : "SLA calculation failed"
+          );
+        }
+        slaDeadline = String((compJson as { sla_deadline?: string }).sla_deadline ?? "");
+      }
+
+      let requesterName: string | undefined;
+      try {
+        const rq = await client.get("ticket.requester");
+        const tr = rq["ticket.requester"] as
+          | { name?: string }
+          | string
+          | undefined;
+        if (tr && typeof tr === "object" && typeof tr.name === "string") {
+          requesterName = tr.name;
+        }
+      } catch {
+        /* optional */
+      }
 
       if (params.is_complaint && m.sla_deadline && slaDeadline) {
         await client.set(`ticket.customField:${m.sla_deadline}`, slaDeadline);
@@ -460,6 +583,8 @@ export default function ZendeskSidebarPage() {
           consumer_duty_risk: dutyRisk,
           consumer_duty_notes: dutyNotes,
           received_at: receivedAt,
+          psr_exceptional_circumstances: psrExceptional,
+          requester_name: requesterName,
         }),
       });
       const saveJson = await saveRes.json();
@@ -469,6 +594,9 @@ export default function ZendeskSidebarPage() {
             ? saveJson.error
             : "Save failed"
         );
+      }
+      if (saveJson.complaint) {
+        setStoredComplaint(saveJson.complaint as ComplaintRecord);
       }
       setReadMode(true);
       setClassifiedAsComplaint(params.is_complaint);
@@ -552,6 +680,38 @@ export default function ZendeskSidebarPage() {
                   </div>
                 )}
               </dl>
+              {classifiedAsComplaint && slaLive && (
+                <section className="space-y-1 border-t border-slate-200 pt-2 mt-2">
+                  <h3 className="font-semibold text-slate-900 text-sm">SLA</h3>
+                  <p className="text-xs text-slate-600">
+                    {slaTypeDescription(slaLive.sla_type)}
+                  </p>
+                  <p className="text-xs">
+                    <span className="text-slate-500">Calculated deadline</span>
+                    <br />
+                    <span className="font-semibold text-slate-900">
+                      {slaLive.sla_deadline}
+                    </span>
+                  </p>
+                  {slaLive.status === "breached" && (
+                    <p className="text-xs font-medium text-red-800 bg-red-50 border border-red-200 rounded px-2 py-1">
+                      {slaLive.days_remaining < 0
+                        ? `${Math.abs(slaLive.days_remaining)} days overdue`
+                        : `${slaLive.days_remaining} days remaining — respond urgently (final SLA window)`}
+                    </p>
+                  )}
+                  {slaLive.status === "at_risk" && (
+                    <p className="text-xs font-medium text-amber-900 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                      {slaLive.days_remaining} days remaining — respond soon
+                    </p>
+                  )}
+                  {slaLive.status === "on_track" && (
+                    <p className="text-xs font-medium text-emerald-800 bg-emerald-50 border border-emerald-200 rounded px-2 py-1">
+                      On track — {slaLive.days_remaining} days remaining
+                    </p>
+                  )}
+                </section>
+              )}
             </>
           ) : (
             <p className="text-slate-600">
@@ -650,21 +810,54 @@ export default function ZendeskSidebarPage() {
                 </div>
               </section>
 
-              <section className="space-y-1 border-t border-slate-200 pt-2">
+              <section className="space-y-2 border-t border-slate-200 pt-2">
                 <h2 className="font-semibold text-slate-900">SLA</h2>
-                {slaPreview && (
-                  <p className="text-xs text-slate-700">
-                    {slaPreview.label}
-                    <br />
-                    <span className="font-medium">
-                      Response deadline: {slaPreview.deadline}
-                    </span>
-                  </p>
+                {slaLive && (
+                  <>
+                    <p className="text-xs text-slate-600">
+                      {slaTypeDescription(slaLive.sla_type)}
+                    </p>
+                    <p className="text-xs">
+                      <span className="text-slate-500">
+                        Calculated regulatory deadline
+                      </span>
+                      <br />
+                      <span className="font-semibold text-slate-900">
+                        {slaLive.sla_deadline}
+                      </span>
+                    </p>
+                    {slaLive.status === "breached" && (
+                      <p className="text-xs font-medium text-red-800 bg-red-50 border border-red-200 rounded px-2 py-1">
+                        {slaLive.days_remaining < 0
+                          ? `${Math.abs(slaLive.days_remaining)} days overdue`
+                          : `${slaLive.days_remaining} days left — final SLA window (treat as breached)`}
+                      </p>
+                    )}
+                    {slaLive.status === "at_risk" && (
+                      <p className="text-xs font-medium text-amber-900 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                        {slaLive.days_remaining} days remaining — respond soon
+                      </p>
+                    )}
+                    {slaLive.status === "on_track" && (
+                      <p className="text-xs font-medium text-emerald-800 bg-emerald-50 border border-emerald-200 rounded px-2 py-1">
+                        On track — {slaLive.days_remaining} days remaining
+                      </p>
+                    )}
+                  </>
+                )}
+                {showPsrExceptional && (
+                  <label className="flex items-center gap-2 text-xs cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={psrExceptional}
+                      onChange={(e) => setPsrExceptional(e.target.checked)}
+                    />
+                    PSR exceptional circumstances (35 business days)
+                  </label>
                 )}
                 <p className="text-xs text-slate-600">
-                  On accept, this date is written to the SLA custom field. Status
-                  (on track / at risk / breached) is stored in Korva from that
-                  date.
+                  On accept, the calculated deadline is written to the SLA
+                  custom field. Korva refreshes status daily (and on save).
                 </p>
               </section>
 

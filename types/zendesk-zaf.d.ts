@@ -16,7 +16,7 @@ export type ZafClient = {
     key: string | Record<string, unknown>,
     value?: unknown
   ) => Promise<void>;
-  invoke: (name: string, data?: unknown) => Promise<unknown>;
+  invoke: (name: string, ...args: unknown[]) => Promise<unknown>;
   on: (event: string, handler: () => void) => void;
 };
 

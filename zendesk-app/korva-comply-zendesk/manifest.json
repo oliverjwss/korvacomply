@@ -16,7 +16,8 @@
         "flexible": true
       },
       "nav_bar": {
-        "url": "assets/navbar.html"
+        "url": "{{setting.api_url}}/zendesk/navbar",
+        "flexible": true
       },
       "background": {
         "url": "assets/background.html"

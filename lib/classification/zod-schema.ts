@@ -55,4 +55,6 @@ export const saveComplaintRequestSchema = z.object({
   consumer_duty_risk: z.string(),
   consumer_duty_notes: z.string(),
   received_at: z.string(),
+  psr_exceptional_circumstances: z.boolean().optional(),
+  requester_name: z.string().optional(),
 });

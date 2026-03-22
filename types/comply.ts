@@ -41,6 +41,7 @@ export interface ComplaintRecord {
   org_id: string;
   zendesk_ticket_id: number;
   zendesk_ticket_url: string;
+  requester_name: string | null;
   is_complaint: boolean;
   ai_suggested_category: string;
   ai_suggested_subcategory: string;
@@ -58,6 +59,8 @@ export interface ComplaintRecord {
   sla_deadline: string;
   resolved_at: string | null;
   sla_status: SLAStatus;
+  psr_exceptional_circumstances: boolean;
+  sla_met: boolean | null;
   three_day_resolved: boolean;
   complaint_outcome: ComplaintOutcome | null;
   redress_amount: number;
@@ -116,4 +119,27 @@ export interface SaveComplaintRequest {
   consumer_duty_risk: string;
   consumer_duty_notes: string;
   received_at: string;
+  psr_exceptional_circumstances?: boolean;
+  requester_name?: string;
+}
+
+export interface SLAAlertItem {
+  complaint_id: string;
+  zendesk_ticket_id: number;
+  zendesk_ticket_url: string;
+  requester_name: string;
+  product_area: string;
+  sla_deadline: string;
+  days_remaining: number;
+  sla_type: SLAType;
+}
+
+export interface SLAAlerts {
+  breached: SLAAlertItem[];
+  at_risk: SLAAlertItem[];
+  on_track_count: number;
+  total_open: number;
+  sla_compliance_30d: number;
+  avg_days_to_resolution: number;
+  dashboard_url: string;
 }

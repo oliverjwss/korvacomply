@@ -2,16 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import { saveComplaintRequestSchema } from "@/lib/classification/zod-schema";
 import {
   computeSlaDeadline,
-  computeSlaStatus,
+  computeSlaStatusProgress,
+  computeThreeDayResolved,
+  endOfUtcDay,
   formatDateOnly,
   pickSlaType,
-} from "@/lib/classification/sla";
+} from "@/lib/sla";
 import {
   getOrgForSidebarRequest,
   requireSubdomainHeader,
 } from "@/lib/sidebar/verify-org";
 import { createSupabaseAdmin } from "@/lib/supabase/admin";
-import type { AuditEntry } from "@/types/comply";
+import type { AuditEntry, SLAStatus } from "@/types/comply";
 
 function mapRow(row: Record<string, unknown>) {
   return {
@@ -19,6 +21,7 @@ function mapRow(row: Record<string, unknown>) {
     org_id: row.org_id,
     zendesk_ticket_id: row.zendesk_ticket_id,
     zendesk_ticket_url: row.zendesk_ticket_url,
+    requester_name: row.requester_name ?? null,
     is_complaint: row.is_complaint,
     ai_suggested_category: row.ai_suggested_category,
     ai_suggested_subcategory: row.ai_suggested_subcategory,
@@ -36,6 +39,8 @@ function mapRow(row: Record<string, unknown>) {
     sla_deadline: row.sla_deadline,
     resolved_at: row.resolved_at,
     sla_status: row.sla_status,
+    psr_exceptional_circumstances: row.psr_exceptional_circumstances ?? false,
+    sla_met: row.sla_met ?? null,
     three_day_resolved: row.three_day_resolved,
     complaint_outcome: row.complaint_outcome,
     redress_amount: row.redress_amount,
@@ -100,7 +105,10 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ complaint: null });
   }
 
-  return NextResponse.json({ complaint: mapRow(data as Record<string, unknown>) });
+  return NextResponse.json({
+    complaint: mapRow(data as Record<string, unknown>),
+    regulated_activities: org.regulated_activities,
+  });
 }
 
 export async function POST(request: NextRequest) {
@@ -145,28 +153,51 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid received_at" }, { status: 400 });
   }
 
-  const slaType = pickSlaType({
-    regulatedActivities: org.regulated_activities,
-    category: b.final_category,
-    subcategory: b.final_subcategory,
-  });
-  const deadlineDate =
-    b.is_complaint ? computeSlaDeadline(receivedAt, slaType) : null;
-  const slaDeadline = deadlineDate ? formatDateOnly(deadlineDate) : null;
-  const slaStatus = b.is_complaint && deadlineDate
-    ? computeSlaStatus(deadlineDate)
-    : "on_track";
-
   const supabase = createSupabaseAdmin();
 
   const { data: existing } = await supabase
     .from("complaints")
     .select(
-      "audit_log, complaint_outcome, redress_amount, resolved_at, three_day_resolved, referred_to_fos"
+      "audit_log, complaint_outcome, redress_amount, resolved_at, three_day_resolved, referred_to_fos, psr_exceptional_circumstances, requester_name, sla_met"
     )
     .eq("org_id", b.org_id)
     .eq("zendesk_ticket_id", b.zendesk_ticket_id)
     .maybeSingle();
+
+  const psrExceptional =
+    b.psr_exceptional_circumstances ??
+    Boolean(existing?.psr_exceptional_circumstances);
+
+  const slaType = pickSlaType({
+    regulatedActivities: org.regulated_activities,
+    category: b.final_category,
+    productArea: b.final_product_area,
+    psrExceptionalCircumstances: psrExceptional,
+  });
+
+  const deadlineDate =
+    b.is_complaint ? computeSlaDeadline(receivedAt, slaType) : null;
+  const slaDeadline = deadlineDate ? formatDateOnly(deadlineDate) : null;
+  let slaStatus: SLAStatus = "on_track";
+  if (b.is_complaint && deadlineDate) {
+    slaStatus = computeSlaStatusProgress(receivedAt, deadlineDate);
+  }
+
+  const resolvedAt = existing?.resolved_at
+    ? new Date(String(existing.resolved_at))
+    : null;
+  const threeDay =
+    resolvedAt && !Number.isNaN(resolvedAt.getTime())
+      ? computeThreeDayResolved(receivedAt, resolvedAt)
+      : Boolean(existing?.three_day_resolved);
+
+  let slaMet: boolean | null =
+    existing?.sla_met === null || existing?.sla_met === undefined
+      ? null
+      : Boolean(existing.sla_met);
+  if (b.is_complaint && resolvedAt && deadlineDate) {
+    slaMet = resolvedAt.getTime() <= endOfUtcDay(deadlineDate).getTime();
+  }
 
   const prevLog = (existing?.audit_log as AuditEntry[] | null) ?? [];
   const entry: AuditEntry = {
@@ -182,20 +213,30 @@ export async function POST(request: NextRequest) {
       ai_suggested_category: b.ai_suggested_category,
       ai_suggested_subcategory: b.ai_suggested_subcategory,
       ai_suggested_product_area: b.ai_suggested_product_area,
+      psr_exceptional_circumstances: psrExceptional,
     },
   };
   const audit_log = [...prevLog, entry];
+
+  const requesterName =
+    b.requester_name?.trim() ||
+    (existing?.requester_name != null
+      ? String(existing.requester_name)
+      : null);
 
   const row = {
     org_id: b.org_id,
     zendesk_ticket_id: b.zendesk_ticket_id,
     zendesk_ticket_url: b.zendesk_ticket_url,
+    requester_name: requesterName,
     is_complaint: b.is_complaint,
     complaint_outcome: existing?.complaint_outcome ?? null,
     redress_amount: existing?.redress_amount ?? null,
     resolved_at: existing?.resolved_at ?? null,
-    three_day_resolved: existing?.three_day_resolved ?? false,
+    three_day_resolved: threeDay,
     referred_to_fos: existing?.referred_to_fos ?? false,
+    psr_exceptional_circumstances: psrExceptional,
+    sla_met: slaMet,
     ai_suggested_category: b.ai_suggested_category,
     ai_suggested_subcategory: b.ai_suggested_subcategory,
     ai_suggested_product_area: b.ai_suggested_product_area,
@@ -229,5 +270,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ complaint: mapRow(saved as Record<string, unknown>) });
+  return NextResponse.json({
+    complaint: mapRow(saved as Record<string, unknown>),
+    regulated_activities: org.regulated_activities,
+  });
 }
