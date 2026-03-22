@@ -1,0 +1,233 @@
+import { NextRequest, NextResponse } from "next/server";
+import { saveComplaintRequestSchema } from "@/lib/classification/zod-schema";
+import {
+  computeSlaDeadline,
+  computeSlaStatus,
+  formatDateOnly,
+  pickSlaType,
+} from "@/lib/classification/sla";
+import {
+  getOrgForSidebarRequest,
+  requireSubdomainHeader,
+} from "@/lib/sidebar/verify-org";
+import { createSupabaseAdmin } from "@/lib/supabase/admin";
+import type { AuditEntry } from "@/types/comply";
+
+function mapRow(row: Record<string, unknown>) {
+  return {
+    id: row.id,
+    org_id: row.org_id,
+    zendesk_ticket_id: row.zendesk_ticket_id,
+    zendesk_ticket_url: row.zendesk_ticket_url,
+    is_complaint: row.is_complaint,
+    ai_suggested_category: row.ai_suggested_category,
+    ai_suggested_subcategory: row.ai_suggested_subcategory,
+    ai_suggested_product_area: row.ai_suggested_product_area,
+    ai_confidence: row.ai_confidence,
+    ai_reasoning: row.ai_reasoning,
+    final_category: row.final_category,
+    final_subcategory: row.final_subcategory,
+    final_product_area: row.final_product_area,
+    classification_method: row.classification_method,
+    classified_by: row.classified_by,
+    classified_at: row.classified_at,
+    received_at: row.received_at,
+    sla_type: row.sla_type,
+    sla_deadline: row.sla_deadline,
+    resolved_at: row.resolved_at,
+    sla_status: row.sla_status,
+    three_day_resolved: row.three_day_resolved,
+    complaint_outcome: row.complaint_outcome,
+    redress_amount: row.redress_amount,
+    referred_to_fos: row.referred_to_fos,
+    vulnerability_detected: row.vulnerability_detected,
+    vulnerability_drivers: row.vulnerability_drivers,
+    vulnerability_indicators: row.vulnerability_indicators,
+    consumer_duty_risk: row.consumer_duty_risk,
+    consumer_duty_notes: row.consumer_duty_notes,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    audit_log: row.audit_log,
+  };
+}
+
+export async function GET(request: NextRequest) {
+  const subdomain = requireSubdomainHeader(request);
+  if (!subdomain) {
+    return NextResponse.json(
+      { error: "Missing X-Zendesk-Subdomain header" },
+      { status: 400 }
+    );
+  }
+
+  const orgId = request.nextUrl.searchParams.get("org_id");
+  const ticketId = request.nextUrl.searchParams.get("ticket_id");
+  if (!orgId || !ticketId) {
+    return NextResponse.json(
+      { error: "org_id and ticket_id query params required" },
+      { status: 400 }
+    );
+  }
+
+  const org = await getOrgForSidebarRequest({
+    orgId,
+    zendeskSubdomain: subdomain,
+  });
+  if (!org) {
+    return NextResponse.json(
+      { error: "Organisation not found or subdomain mismatch" },
+      { status: 403 }
+    );
+  }
+
+  const tid = Number(ticketId);
+  if (!Number.isFinite(tid)) {
+    return NextResponse.json({ error: "Invalid ticket_id" }, { status: 400 });
+  }
+
+  const supabase = createSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("complaints")
+    .select("*")
+    .eq("org_id", orgId)
+    .eq("zendesk_ticket_id", tid)
+    .maybeSingle();
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+  if (!data) {
+    return NextResponse.json({ complaint: null });
+  }
+
+  return NextResponse.json({ complaint: mapRow(data as Record<string, unknown>) });
+}
+
+export async function POST(request: NextRequest) {
+  const subdomain = requireSubdomainHeader(request);
+  if (!subdomain) {
+    return NextResponse.json(
+      { error: "Missing X-Zendesk-Subdomain header" },
+      { status: 400 }
+    );
+  }
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+
+  const parsed = saveComplaintRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: parsed.error.flatten() },
+      { status: 400 }
+    );
+  }
+
+  const b = parsed.data;
+
+  const org = await getOrgForSidebarRequest({
+    orgId: b.org_id,
+    zendeskSubdomain: subdomain,
+  });
+  if (!org) {
+    return NextResponse.json(
+      { error: "Organisation not found or subdomain mismatch" },
+      { status: 403 }
+    );
+  }
+
+  const receivedAt = new Date(b.received_at);
+  if (Number.isNaN(receivedAt.getTime())) {
+    return NextResponse.json({ error: "Invalid received_at" }, { status: 400 });
+  }
+
+  const slaType = pickSlaType({
+    regulatedActivities: org.regulated_activities,
+    category: b.final_category,
+    subcategory: b.final_subcategory,
+  });
+  const deadlineDate =
+    b.is_complaint ? computeSlaDeadline(receivedAt, slaType) : null;
+  const slaDeadline = deadlineDate ? formatDateOnly(deadlineDate) : null;
+  const slaStatus = b.is_complaint && deadlineDate
+    ? computeSlaStatus(deadlineDate)
+    : "on_track";
+
+  const supabase = createSupabaseAdmin();
+
+  const { data: existing } = await supabase
+    .from("complaints")
+    .select(
+      "audit_log, complaint_outcome, redress_amount, resolved_at, three_day_resolved, referred_to_fos"
+    )
+    .eq("org_id", b.org_id)
+    .eq("zendesk_ticket_id", b.zendesk_ticket_id)
+    .maybeSingle();
+
+  const prevLog = (existing?.audit_log as AuditEntry[] | null) ?? [];
+  const entry: AuditEntry = {
+    timestamp: new Date().toISOString(),
+    actor: b.classified_by,
+    action: "classification_saved",
+    details: {
+      classification_method: b.classification_method,
+      is_complaint: b.is_complaint,
+      final_category: b.final_category,
+      final_subcategory: b.final_subcategory,
+      final_product_area: b.final_product_area,
+      ai_suggested_category: b.ai_suggested_category,
+      ai_suggested_subcategory: b.ai_suggested_subcategory,
+      ai_suggested_product_area: b.ai_suggested_product_area,
+    },
+  };
+  const audit_log = [...prevLog, entry];
+
+  const row = {
+    org_id: b.org_id,
+    zendesk_ticket_id: b.zendesk_ticket_id,
+    zendesk_ticket_url: b.zendesk_ticket_url,
+    is_complaint: b.is_complaint,
+    complaint_outcome: existing?.complaint_outcome ?? null,
+    redress_amount: existing?.redress_amount ?? null,
+    resolved_at: existing?.resolved_at ?? null,
+    three_day_resolved: existing?.three_day_resolved ?? false,
+    referred_to_fos: existing?.referred_to_fos ?? false,
+    ai_suggested_category: b.ai_suggested_category,
+    ai_suggested_subcategory: b.ai_suggested_subcategory,
+    ai_suggested_product_area: b.ai_suggested_product_area,
+    ai_confidence: b.ai_confidence,
+    ai_reasoning: b.ai_reasoning,
+    final_category: b.final_category,
+    final_subcategory: b.final_subcategory,
+    final_product_area: b.final_product_area,
+    classification_method: b.classification_method,
+    classified_by: b.classified_by,
+    received_at: receivedAt.toISOString(),
+    sla_type: slaType,
+    sla_deadline: slaDeadline,
+    sla_status: slaStatus,
+    vulnerability_detected: b.vulnerability_detected,
+    vulnerability_drivers: b.vulnerability_drivers,
+    vulnerability_indicators: b.vulnerability_indicators,
+    consumer_duty_risk: b.consumer_duty_risk,
+    consumer_duty_notes: b.consumer_duty_notes,
+    audit_log,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { data: saved, error } = await supabase
+    .from("complaints")
+    .upsert(row, { onConflict: "org_id,zendesk_ticket_id" })
+    .select("*")
+    .single();
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ complaint: mapRow(saved as Record<string, unknown>) });
+}

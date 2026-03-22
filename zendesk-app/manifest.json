@@ -1,0 +1,39 @@
+{
+  "name": "Korva Comply",
+  "author": {
+    "name": "Olke Ltd",
+    "email": "support@korva.io",
+    "url": "https://korva.io"
+  },
+  "defaultLocale": "en",
+  "frameworkVersion": "2.0",
+  "version": "1.1.1",
+  "private": true,
+  "location": {
+    "support": {
+      "ticket_sidebar": {
+        "url": "{{setting.api_url}}/zendesk/sidebar",
+        "flexible": true
+      },
+      "nav_bar": {
+        "url": "assets/navbar.html"
+      },
+      "background": {
+        "url": "assets/background.html"
+      }
+    }
+  },
+  "parameters": [
+    {
+      "name": "api_url",
+      "type": "url",
+      "required": true,
+      "default": "https://comply.korva.io"
+    },
+    {
+      "name": "org_id",
+      "type": "text",
+      "required": true
+    }
+  ]
+}

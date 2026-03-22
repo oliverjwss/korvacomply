@@ -1,0 +1,18 @@
+{
+  "app": {
+    "name": "Korva Comply",
+    "short_description": "Complaint classification, SLA visibility, and compliance workflows in Support.",
+    "long_description": "Korva Comply connects Zendesk Support to Korva Comply so your team can run structured complaint handling, taxonomy-aligned classification, and operational visibility from the agent workspace.\n\nWhat you get:\n- Sidebar and navigation entry points into Korva Comply\n- Background view for the Korva dashboard inside Zendesk\n\nConnect your Zendesk organisation to Korva using the Korva web app (OAuth). This Support app embeds Korva using the base URL you configure.\n\nData and hosting:\nKorva Comply is designed for EU-aligned deployments. Only configure URLs you approve for your organisation.",
+    "installation_instructions": "1. Complete Korva Comply setup in the browser (Zendesk OAuth) using your Korva site URL.\n2. Copy your Organisation ID from the Korva Setup final step.\n3. Upload and install this private app in Admin Center (Apps and integrations, Zendesk Support apps, Upload App).\n4. In app settings: Korva app base URL must be a full URL including https:// — for example https://korvacomply.vercel.app (no trailing slash). Without https:// the ticket sidebar will not load.\n5. Paste Organisation ID and save; enable for agents.\n\nRebuild the zip after updates: from the Korva project folder run npm run zendesk:zip.",
+    "parameters": {
+      "api_url": {
+        "label": "Korva app base URL",
+        "helpText": "Must include https:// — e.g. https://yoursite.vercel.app — no trailing slash. Zendesk requires a full absolute URL for the sidebar iframe."
+      },
+      "org_id": {
+        "label": "Korva organisation ID",
+        "helpText": "UUID from Korva Setup (step 4). Required so the sidebar can load your field mapping and call Korva APIs."
+      }
+    }
+  }
+}

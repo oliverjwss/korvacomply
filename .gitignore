@@ -31,6 +31,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# Zendesk app package (rebuild locally with npm run zendesk:zip)
+korva-comply-zendesk.zip
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

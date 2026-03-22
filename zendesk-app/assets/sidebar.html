@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Korva Comply</title>
+    <script src="https://static.zdassets.com/zendesk_app_framework_sdk/2.0/zaf_sdk.min.js"></script>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, sans-serif;
+        margin: 12px;
+        color: #2f3941;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      p {
+        margin: 0 0 12px;
+      }
+      a.btn {
+        display: inline-block;
+        background: #03363d;
+        color: #fff !important;
+        text-decoration: none;
+        padding: 8px 14px;
+        border-radius: 4px;
+        font-weight: 600;
+        font-size: 12px;
+      }
+      a.btn:hover {
+        background: #044a54;
+      }
+    </style>
+  </head>
+  <body>
+    <p id="status">Loading…</p>
+    <p id="actions" style="display: none">
+      Open Korva Comply for your dashboard, organisation setup, ticket fields,
+      and compliance workflows.
+    </p>
+    <p id="btn-wrap" style="display: none">
+      <a class="btn" id="open-korva" href="#" target="_blank" rel="noopener"
+        >Open Korva Comply</a
+      >
+    </p>
+    <script>
+      var client = ZAFClient.init();
+      client.on("app.registered", function () {
+        client.metadata().then(function (meta) {
+          var base =
+            (meta && meta.settings && meta.settings.api_url) ||
+            "https://comply.korva.io";
+          var root = base.replace(/\/$/, "");
+          var dash = root + "/dashboard";
+          document.getElementById("open-korva").href = dash;
+          document.getElementById("status").style.display = "none";
+          document.getElementById("actions").style.display = "block";
+          document.getElementById("btn-wrap").style.display = "block";
+          client.invoke("resize", { height: "140px" });
+        });
+      });
+    </script>
+  </body>
+</html>

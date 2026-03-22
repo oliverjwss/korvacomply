@@ -58,6 +58,9 @@ export default function SetupPage() {
       setOrg(o);
       setActivities(o.regulated_activities ?? []);
       setSelectedGroups(o.complaint_group_ids ?? []);
+      if (o.setup_completed || o.zendesk_field_mapping) {
+        setStep(4);
+      }
     } catch {
       setError("Network error");
     } finally {
@@ -320,6 +323,27 @@ export default function SetupPage() {
               Korva Comply is configured for your Zendesk instance. Field IDs are stored in
               your organisation record for the sidebar and background apps.
             </p>
+            <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950/50 p-4 space-y-2">
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                Zendesk app · Organisation ID
+              </p>
+              <p className="text-sm text-slate-600">
+                Paste this into the private app installation setting{" "}
+                <strong>org_id</strong> (together with your Korva base URL).
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <code className="text-xs break-all rounded bg-white dark:bg-slate-900 px-2 py-1 border border-slate-200 dark:border-slate-700 flex-1 min-w-0">
+                  {org.id}
+                </code>
+                <button
+                  type="button"
+                  className="shrink-0 rounded-md bg-slate-200 dark:bg-slate-800 px-3 py-1.5 text-xs font-medium hover:opacity-90"
+                  onClick={() => void navigator.clipboard.writeText(org.id)}
+                >
+                  Copy
+                </button>
+              </div>
+            </div>
             {org.zendesk_field_mapping && (
               <pre className="text-xs overflow-x-auto rounded-lg bg-slate-50 dark:bg-slate-950/50 p-3 border border-slate-100 dark:border-slate-800">
                 {JSON.stringify(org.zendesk_field_mapping, null, 2)}

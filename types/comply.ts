@@ -1,0 +1,119 @@
+export type ClassificationMethod =
+  | "ai_accepted"
+  | "ai_edited"
+  | "ai_rejected"
+  | "manual";
+
+export type SLAType = "standard_8_week" | "psr_15_day" | "psr_35_day";
+
+export type SLAStatus = "on_track" | "at_risk" | "breached";
+
+export type ComplaintOutcome = "upheld" | "partially_upheld" | "rejected";
+
+export type VulnerabilityDriver =
+  | "Health"
+  | "Life events"
+  | "Resilience"
+  | "Capability";
+
+export type RiskLevel = "low" | "medium" | "high";
+
+export interface Organisation {
+  id: string;
+  zendesk_subdomain: string;
+  company_name: string;
+  fca_firm_reference: string | null;
+  regulated_activities: string[];
+  subscription_tier: "trial" | "starter" | "growth" | "scale";
+  setup_completed: boolean;
+  zendesk_field_mapping: Record<string, number>;
+}
+
+export interface AuditEntry {
+  timestamp: string;
+  actor: string;
+  action: string;
+  details: Record<string, unknown>;
+}
+
+export interface ComplaintRecord {
+  id: string;
+  org_id: string;
+  zendesk_ticket_id: number;
+  zendesk_ticket_url: string;
+  is_complaint: boolean;
+  ai_suggested_category: string;
+  ai_suggested_subcategory: string;
+  ai_suggested_product_area: string;
+  ai_confidence: number;
+  ai_reasoning: string;
+  final_category: string;
+  final_subcategory: string;
+  final_product_area: string;
+  classification_method: ClassificationMethod;
+  classified_by: string;
+  classified_at: string;
+  received_at: string;
+  sla_type: SLAType;
+  sla_deadline: string;
+  resolved_at: string | null;
+  sla_status: SLAStatus;
+  three_day_resolved: boolean;
+  complaint_outcome: ComplaintOutcome | null;
+  redress_amount: number;
+  referred_to_fos: boolean;
+  vulnerability_detected: boolean;
+  vulnerability_drivers: VulnerabilityDriver[];
+  vulnerability_indicators: string[];
+  consumer_duty_risk: RiskLevel;
+  consumer_duty_notes: string;
+  created_at: string;
+  updated_at: string;
+  audit_log: AuditEntry[];
+}
+
+export interface ClassificationResult {
+  is_complaint: boolean;
+  complaint_confidence: number;
+  category: string;
+  subcategory: string;
+  product_area: string;
+  vulnerability_detected: boolean;
+  vulnerability_indicators: string[] | null;
+  vulnerability_drivers: VulnerabilityDriver[] | null;
+  consumer_duty_risk: RiskLevel;
+  consumer_duty_notes: string;
+  reasoning: string;
+}
+
+export interface ClassifyRequest {
+  org_id: string;
+  zendesk_ticket_id: number;
+  subject: string;
+  description: string;
+  recent_comments: string[];
+  existing_tags: string[];
+}
+
+export interface SaveComplaintRequest {
+  org_id: string;
+  zendesk_ticket_id: number;
+  zendesk_ticket_url: string;
+  ai_suggested_category: string;
+  ai_suggested_subcategory: string;
+  ai_suggested_product_area: string;
+  ai_confidence: number;
+  ai_reasoning: string;
+  is_complaint: boolean;
+  final_category: string;
+  final_subcategory: string;
+  final_product_area: string;
+  classification_method: ClassificationMethod;
+  classified_by: string;
+  vulnerability_detected: boolean;
+  vulnerability_drivers: string[];
+  vulnerability_indicators: string[];
+  consumer_duty_risk: string;
+  consumer_duty_notes: string;
+  received_at: string;
+}
